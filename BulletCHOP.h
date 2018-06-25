@@ -2,68 +2,53 @@
 
 #include <btBulletDynamicsCommon.h>
 
-/*
-
-This example file implements a class that does 2 different things depending on
-if a CHOP is connected to the CPlusPlus CHOPs input or not.
-The example is timesliced, which is the more complex way of working.
-
-If an input is connected the node will output the same number of channels as the
-input and divide the first 'N' samples in the input channel by 2. 'N' being the current
-timeslice size. This is noteworthy because if the input isn't changing then the output
-will look wierd since depending on the timeslice size some number of the first samples
-of the input will get used.
-
-If no input is connected then the node will output a smooth sine wave at 120hz.
-*/
 
 
 // To get more help about these functions, look at CHOP_CPlusPlusBase.h
 
-/*class KinematicMotionState : public btMotionState {
-public:
-    KinematicMotionState(const btTransform &initialpos) { mPos1 = initialpos; }
-    virtual ~ KinematicMotionState() { }
-   
-    virtual void getWorldTransform(btTransform &worldTrans) const { worldTrans = mPos1; }
-    //void setKinematicPos(btTransform &currentPos) { mPos1 = currentPos; }
-    virtual void setWorldTransform(const btTransform &worldTrans) { }
- 
-protected:
-    btTransform mPos1;
-};*/
 
 class BulletCHOP : public CHOP_CPlusPlusBase
 {
 public:
-	BulletCHOP(const CHOP_NodeInfo *info);
+	BulletCHOP(const OP_NodeInfo *info);
 	virtual ~BulletCHOP();
 
-	virtual void		getGeneralInfo(CHOP_GeneralInfo *);
-	virtual bool		getOutputInfo(CHOP_OutputInfo*);
-	virtual const char*	getChannelName(int index, void* reserved);
+	virtual void		getGeneralInfo(CHOP_GeneralInfo*) override;
+	virtual bool		getOutputInfo(CHOP_OutputInfo*) override;
+	virtual const char*	getChannelName(int index, void* reserved) override;
 
 	virtual void		execute(const CHOP_Output*,
-								const CHOP_InputArrays*,
-								void* reserved);
+									OP_Inputs*,
+								void* reserved) override;
 
 
-	virtual int			getNumInfoCHOPChans();
+	virtual int			getNumInfoCHOPChans() override;
 	virtual void		getInfoCHOPChan(int index,
-										CHOP_InfoCHOPChan *chan);
+								OP_InfoCHOPChan* chan) override;
 
-	virtual bool		getInfoDATSize(CHOP_InfoDATSize *infoSize);
+	virtual bool		getInfoDATSize(OP_InfoDATSize* infoSize) override;
 	virtual void		getInfoDATEntries(int index,
-											int nEntries,
-											CHOP_InfoDATEntries *entries);
+									int nEntries,
+									OP_InfoDATEntries* entries) override;
+
+	virtual void		setupParameters(OP_ParameterManager* manager) override;
+	virtual void		pulsePressed(const char* name) override;
 
 	void worldSetup();
 
 	void worldDestroy();
 
-	void addBody(btVector3 pos, btVector3 rot, btVector3 scale, btScalar mass);
+	void addRigidBox(btVector3 pos, btVector3 rot, btVector3 scale, btScalar mass);
+	void addRigidSphere(btVector3 pos, btVector3 rot, btScalar radius, btScalar mass);
+	void addKineBox(btVector3 pos, btVector3 rot, btVector3 scale);
 
-	void addPlane(btVector3 pos, btVector3 rot);
+	void addPlane(btVector3 planeNormal, btScalar planeConstant);
+
+	void initRigidSpheres(OP_Inputs* inputs);
+	void initRigidBoxes(OP_Inputs* inputs);
+	void initKineBoxes(OP_Inputs* inputs);
+	void initPlanes(OP_Inputs* inputs);
+	void updateKineBoxes(OP_Inputs* inputs);
 
 	void removeBodies();
 
@@ -79,7 +64,7 @@ private:
 	// We don't need to store this pointer, but we do for the example.
 	// The CHOP_NodeInfo class store information about the node that's using
 	// this instance of the class (like its name).
-	const CHOP_NodeInfo		*myNodeInfo;
+	const OP_NodeInfo		*myNodeInfo;
 
 	// In this example this value will be incremented each time the execute()
 	// function is called, then passes back to the CHOP 
@@ -96,7 +81,21 @@ private:
 	
 	btClock clock;
 
-	btAlignedObjectArray<btCollisionShape*>	collisionShapes;
+	btAlignedObjectArray<btCollisionShape*>	rigidSpheresShapes;
+	btAlignedObjectArray<btCollisionShape*>	rigidBoxesShapes;
+	btAlignedObjectArray<btCollisionShape*> kineBoxesShapes;
+	btAlignedObjectArray<btCollisionShape*> staticPlanesShapes;
+
+
+	btAlignedObjectArray<int> rigidSpheresIds;
+	btAlignedObjectArray<int> rigidBoxesIds;
+	btAlignedObjectArray<int> kineBoxesIds;
+	btAlignedObjectArray<int> staticPlanesIds;
+
+	enum { TX, TY, TZ, RX, RY, RZ , SPEED, QX, QY, QZ, QW};
+
+
+	int frame = 0;
 
 	
 };

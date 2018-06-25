@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <assert.h>
 
 // These functions are basic C function, which the DLL loader can find
 // much easier than finding a C++ Class.
@@ -21,7 +22,7 @@ GetCHOPAPIVersion(void)
 
 DLLEXPORT
 CHOP_CPlusPlusBase*
-CreateCHOPInstance(const CHOP_NodeInfo *info)
+CreateCHOPInstance(const OP_NodeInfo *info)
 {
 	// Return a new instance of your class every time this is called.
 	// It will be called once per CHOP that is using the .dll
@@ -41,7 +42,7 @@ DestroyCHOPInstance(CHOP_CPlusPlusBase *instance)
 };
 
 
-BulletCHOP::BulletCHOP(const CHOP_NodeInfo *info) : myNodeInfo(info)
+BulletCHOP::BulletCHOP(const OP_NodeInfo *info) : myNodeInfo(info)
 {
 	myExecuteCount = 0;
 	pos = 0;
@@ -75,9 +76,20 @@ void BulletCHOP::worldSetup(){
 	info.m_splitImpulse = 1;
 	info.m_splitImpulsePenetrationThreshold = -0.02;
 
+	rigidBoxesShapes.resize(0);
+	rigidSpheresShapes.resize(0);
+	kineBoxesShapes.resize(0);
+	staticPlanesShapes.resize(0);
+
+	rigidBoxesIds.resize(0);
+	rigidSpheresIds.resize(0);
+	kineBoxesIds.resize(0);
+
 }
 
 void BulletCHOP::worldDestroy(){
+
+	removeBodies();
 
 	delete dynamicsWorld;
 	delete solver;
@@ -92,42 +104,78 @@ BulletCHOP::getGeneralInfo(CHOP_GeneralInfo *ginfo)
 	// This will cause the node to cook every frame
 	ginfo->cookEveryFrameIfAsked = true;
 	ginfo->timeslice = false;
-	ginfo->inputMatchIndex = 0;
+	//ginfo->inputMatchIndex = 0;
 }
 
 bool
 BulletCHOP::getOutputInfo(CHOP_OutputInfo *info)
 {
-	// If there is an input connected, we are going to match it's channel names etc
-	// otherwise we'll specify our own.
-	if (info->inputArrays->numCHOPInputs > 0)
+
+	info->numChannels = 11;
+	info->sampleRate = 60;
+
+	if (rigidBoxesIds.size()>0)
 	{
-		return false;
+		info->numSamples = rigidBoxesIds.size();
 	}
 	else
 	{
-		info->numChannels = 1;
-
-		// Since we are outputting a timeslice, the system will dictate
-		// the length and startIndex of the CHOP data
-		info->length = 1;
-		info->startIndex = 0;
-
-		// For illustration we are going to output 120hz data
-		info->sampleRate = 60;
-		return true;
+		info->numSamples = 1;
 	}
+
+	return true;
 }
 
 const char*
 BulletCHOP::getChannelName(int index, void* reserved)
 {
-	return "chan1";
+	const char* name = "";
+
+	switch (index) {
+	case TX:
+		name = "tx";
+		break;
+	case TY:
+		name = "ty";
+		break;
+	case TZ:
+		name = "tz";
+		break;
+	case RX:
+		name = "rx";
+		break;
+	case RY:
+		name = "ry";
+		break;
+	case RZ:
+		name = "rz";
+		break;
+	case SPEED:
+		name = "speed";
+		break;
+	case QX:
+		name = "qx";
+		break;
+	case QY:
+		name = "qy";
+		break;
+	case QZ:
+		name = "qz";
+		break;
+	case QW:
+		name = "qw";
+		break;
+
+	}
+
+	return name;
 }
 
-void BulletCHOP::addBody(btVector3 pos, btVector3 rot, btVector3 scale, btScalar mass){
+/*void BulletCHOP::addBody(btVector3 pos, btVector3 rot, btVector3 scale, btScalar mass){
 
 	btCollisionShape* colShape = new btBoxShape(0.5*scale);
+
+	//btCollisionShape* colShape = new btSphereShape(0.5*scale.getX());
 
 	collisionShapes.push_back(colShape);
 		
@@ -161,32 +209,125 @@ void BulletCHOP::addBody(btVector3 pos, btVector3 rot, btVector3 scale, btScalar
 
 	dynamicsWorld->addRigidBody(body);
 
+}*/
 
+void BulletCHOP::addKineBox(btVector3 pos, btVector3 rot, btVector3 scale) {
+
+	btCollisionShape* colShape = new btBoxShape(0.5*scale);
+
+	kineBoxesShapes.push_back(colShape);
+
+	/// Create Dynamic Objects
+	btTransform startTransform;
+	startTransform.setIdentity();
+
+	btVector3 localInertia(0, 0, 0);
+
+	btMatrix3x3 rotMat;
+	rotMat.setEulerZYX(rot.x(), rot.y(), rot.z());
+
+	startTransform.setOrigin(pos);
+	startTransform.setBasis(rotMat);
+
+	//using motionstate is recommended, it provides interpolation capabilities, and only synchronizes 'active' objects
+	btDefaultMotionState* myMotionState = new btDefaultMotionState(startTransform);
+	btRigidBody::btRigidBodyConstructionInfo rbInfo(0, myMotionState, colShape, localInertia);
+
+	btRigidBody* body = new btRigidBody(rbInfo);
+
+	body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
+	body->setActivationState(DISABLE_DEACTIVATION);
+
+	kineBoxesIds.push_back(dynamicsWorld->getCollisionObjectArray().size());
+
+	dynamicsWorld->addRigidBody(body);
 
 }
 
+void BulletCHOP::addRigidSphere(btVector3 pos, btVector3 rot, btScalar radius, btScalar mass) {
 
-void BulletCHOP::addPlane(btVector3 pos, btVector3 rot){
+	btCollisionShape* colShape = new btSphereShape(radius);
 
-	btCollisionShape* groundShape = new btBoxShape(btVector3(btScalar(50.),btScalar(50.),btScalar(50.)));
-	//btCollisionShape* groundShape = new btStaticPlaneShape(btVector3(0,1,0),0);
+	rigidSpheresShapes.push_back(colShape);
+
+	/// Create Dynamic Objects
+	btTransform startTransform;
+	startTransform.setIdentity();
+
+	btVector3 localInertia(0, 0, 0);
+
+	colShape->calculateLocalInertia(mass, localInertia);
+
+	btMatrix3x3 rotMat;
+	rotMat.setEulerZYX(rot.x(), rot.y(), rot.z());
+
+	startTransform.setOrigin(pos);
+	startTransform.setBasis(rotMat);
+
+
+	//using motionstate is recommended, it provides interpolation capabilities, and only synchronizes 'active' objects
+	btDefaultMotionState* myMotionState = new btDefaultMotionState(startTransform);
+	btRigidBody::btRigidBodyConstructionInfo rbInfo(mass, myMotionState, colShape, localInertia);
+
+	btRigidBody* body = new btRigidBody(rbInfo);
+
+	rigidSpheresIds.push_back(dynamicsWorld->getCollisionObjectArray().size());
+
+	dynamicsWorld->addRigidBody(body);
+
+}
+
+void BulletCHOP::addRigidBox(btVector3 pos, btVector3 rot, btVector3 scale, btScalar mass) {
+
+	btCollisionShape* colShape = new btBoxShape(0.5*scale);
+
+	rigidBoxesShapes.push_back(colShape);
+
+	/// Create Dynamic Objects
+	btTransform startTransform;
+	startTransform.setIdentity();
+
+	btVector3 localInertia(0, 0, 0);
+
+	colShape->calculateLocalInertia(mass, localInertia);
+
+	btMatrix3x3 rotMat;
+	rotMat.setEulerZYX(rot.x(), rot.y(), rot.z());
+
+	startTransform.setOrigin(pos);
+	startTransform.setBasis(rotMat);
+
+
+	//using motionstate is recommended, it provides interpolation capabilities, and only synchronizes 'active' objects
+	btDefaultMotionState* myMotionState = new btDefaultMotionState(startTransform);
+	btRigidBody::btRigidBodyConstructionInfo rbInfo(mass, myMotionState, colShape, localInertia);
+
+	btRigidBody* body = new btRigidBody(rbInfo);
+
+	rigidBoxesIds.push_back(dynamicsWorld->getCollisionObjectArray().size());
+
+	dynamicsWorld->addRigidBody(body);
+
+}
+
+void BulletCHOP::addPlane(btVector3 planeNormal, btScalar planeConstant){
+
 	
-	collisionShapes.push_back(groundShape);
+	btCollisionShape* groundShape = new btStaticPlaneShape(planeNormal, planeConstant);
+	
+	staticPlanesShapes.push_back(groundShape);
 
 	btTransform groundTransform;
 	groundTransform.setIdentity();
 	//groundTransform.setOrigin(pos);
-	groundTransform.setOrigin(btVector3(0,-50,0));
+	//groundTransform.setOrigin(btVector3(0,-50,0));
 
 
 	btScalar mass(0.);
 
 	//rigidbody is dynamic if and only if mass is non zero, otherwise static
-	bool isDynamic = (mass != 0.f);
 
 	btVector3 localInertia(0,0,0);
-	if (isDynamic)
-		groundShape->calculateLocalInertia(mass,localInertia);
 
 	//using motionstate is recommended, it provides interpolation capabilities, and only synchronizes 'active' objects
 	btDefaultMotionState* myMotionState = new btDefaultMotionState(groundTransform);
@@ -214,178 +355,254 @@ void BulletCHOP::removeBodies(){
 	}
 
 	//delete collision shapes
-	for (int j=0;j<collisionShapes.size();j++)
+	for (int j=0;j<rigidSpheresShapes.size();j++)
 	{
-		btCollisionShape* shape = collisionShapes[j];
-		delete shape;
+		delete rigidSpheresShapes[j];
 	}
-	collisionShapes.clear();
+	rigidSpheresShapes.resize(0);
+	rigidSpheresIds.resize(0);
+
+	//delete collision shapes
+	for (int j = 0; j<rigidBoxesShapes.size(); j++)
+	{
+		delete rigidBoxesShapes[j];
+	}
+	rigidBoxesShapes.resize(0);
+	rigidBoxesIds.resize(0);
+
+	//delete collision shapes
+	for (int j = 0; j<kineBoxesShapes.size(); j++)
+	{
+		delete kineBoxesShapes[j];
+	}
+	kineBoxesShapes.resize(0);
+	kineBoxesIds.resize(0);
+
 
 }
 
+void BulletCHOP::initRigidSpheres(OP_Inputs* inputs) {
+
+	if (inputs->getParCHOP("Spheresrigidchop")) {
+
+		const OP_CHOPInput* spheresRigidInput = inputs->getParCHOP("Spheresrigidchop");
+
+		for (int i = 0; i < spheresRigidInput->numSamples; i++) {
+
+			btVector3 pos = btVector3(
+				spheresRigidInput->getChannelData(0)[i],
+				spheresRigidInput->getChannelData(1)[i],
+				spheresRigidInput->getChannelData(2)[i]);
+
+			btVector3 rot = 0.017453*btVector3(
+				spheresRigidInput->getChannelData(3)[i],
+				spheresRigidInput->getChannelData(4)[i],
+				spheresRigidInput->getChannelData(5)[i]);
+
+			btScalar radius = spheresRigidInput->getChannelData(6)[i];
+
+			addRigidSphere(pos, rot, radius, 1);
+		}
+	}
+}
+
+void BulletCHOP::initRigidBoxes(OP_Inputs* inputs) {
+
+	if (inputs->getParCHOP("Boxesrigidchop")) {
+		const OP_CHOPInput* boxesRigidInput = inputs->getParCHOP("Boxesrigidchop");
+
+		for (int i = 0; i < boxesRigidInput->numSamples; i++) {
+
+			btVector3 pos = btVector3(
+				boxesRigidInput->getChannelData(0)[i],
+				boxesRigidInput->getChannelData(1)[i],
+				boxesRigidInput->getChannelData(2)[i]);
+
+			btVector3 rot = 0.017453*btVector3(
+				boxesRigidInput->getChannelData(3)[i],
+				boxesRigidInput->getChannelData(4)[i],
+				boxesRigidInput->getChannelData(5)[i]);
+
+			btVector3 scale = btVector3(
+				boxesRigidInput->getChannelData(6)[i],
+				boxesRigidInput->getChannelData(7)[i],
+				boxesRigidInput->getChannelData(8)[i]);
+
+			addRigidBox(pos, rot, scale, 1);
+		}
+	}
+}
+
+
+void BulletCHOP::initKineBoxes(OP_Inputs* inputs) {
+
+	if (inputs->getParCHOP("Boxeskinechop")) {
+		const OP_CHOPInput* boxesKineInput = inputs->getParCHOP("Boxeskinechop");
+
+		for (int i = 0; i < boxesKineInput->numSamples; i++) {
+
+			btVector3 pos = btVector3(
+				boxesKineInput->getChannelData(0)[i],
+				boxesKineInput->getChannelData(1)[i],
+				boxesKineInput->getChannelData(2)[i]);
+
+			btVector3 rot = 0.017453*btVector3(
+				boxesKineInput->getChannelData(3)[i],
+				boxesKineInput->getChannelData(4)[i],
+				boxesKineInput->getChannelData(5)[i]);
+
+			btVector3 scale = btVector3(
+				boxesKineInput->getChannelData(6)[i],
+				boxesKineInput->getChannelData(7)[i],
+				boxesKineInput->getChannelData(8)[i]);
+
+			addKineBox(pos, rot, scale);
+		}
+	}
+}
+
+void BulletCHOP::updateKineBoxes(OP_Inputs* inputs) {
+
+	if (inputs->getParCHOP("Boxeskinechop") && kineBoxesIds.size()>0) {
+
+		const OP_CHOPInput* boxesKineInput = inputs->getParCHOP("Boxeskinechop");
+
+		for (int i = 0; i < boxesKineInput->numSamples; i++) {
+
+			int index = kineBoxesIds[i];
+
+			btCollisionObject* obj = dynamicsWorld->getCollisionObjectArray()[index];
+			btRigidBody* body = btRigidBody::upcast(obj);
+
+			btVector3 pos = btVector3(
+				boxesKineInput->getChannelData(0)[i],
+				boxesKineInput->getChannelData(1)[i],
+				boxesKineInput->getChannelData(2)[i]);
+
+			btVector3 rot = 0.017453*btVector3(
+				boxesKineInput->getChannelData(3)[i],
+				boxesKineInput->getChannelData(4)[i],
+				boxesKineInput->getChannelData(5)[i]);
+
+			btTransform trans;
+
+			trans.setOrigin(pos);
+
+			btMatrix3x3 rotMat;
+			rotMat.setEulerZYX(rot.x(), rot.y(), rot.z());
+
+			trans.setBasis(rotMat);
+
+			body->getMotionState()->setWorldTransform(trans);
+		}
+	}
+}
+
+void BulletCHOP::initPlanes(OP_Inputs* inputs) {
+
+	if (inputs->getParCHOP("Colplaneschop")) {
+
+		const OP_CHOPInput* colPlanesInput = inputs->getParCHOP("Colplaneschop");
+
+		for (int i = 0; i < colPlanesInput->numSamples; i++) {
+
+			btVector3 pos = btVector3(
+				colPlanesInput->getChannelData(0)[i],
+				colPlanesInput->getChannelData(1)[i],
+				colPlanesInput->getChannelData(2)[i]);
+
+		}
+	}
+}
+
+
 void BulletCHOP::execute(const CHOP_Output* output,
-								const CHOP_InputArrays* inputs,
-								void* reserved)
+								OP_Inputs* inputs,
+									void* reserved)
 {
 	myExecuteCount++;
 
-	dynamicsWorld->setGravity(btVector3(inputs->floatInputs[1].values[0],inputs->floatInputs[1].values[1],inputs->floatInputs[1].values[2]));
-	
-	// In this case we'll just take the first input and re-output it with it's
-	// value divivded by two
-	if (inputs->numCHOPInputs > 0)
+	double gravity[3];
+	inputs->getParDouble3("Gravity", gravity[0], gravity[1], gravity[2]);
+
+	dynamicsWorld->setGravity(btVector3(gravity[0], gravity[1], gravity[2]));
+
+	int reset = inputs->getParInt("Reset");
+
+	if (reset == 1) {
+
+		removeBodies();
+
+		frame = 0;
+
+		//initRigidSpheres(inputs);
+		initRigidBoxes(inputs);
+
+		initKineBoxes(inputs);
+		
+	} 
+
+	else 
+
 	{
-		
-		
 
-		if(inputs->floatInputs[0].values[0] == 1) {
+		updateKineBoxes(inputs);
 
-			removeBodies();
-			
-			for (int i = 0; i < inputs->CHOPInputs[0].length; i++){
-			
-				output->channels[0][i] = inputs->CHOPInputs[0].channels[0][i];
-				output->channels[1][i] = inputs->CHOPInputs[0].channels[1][i];
-				output->channels[2][i] = inputs->CHOPInputs[0].channels[2][i];
-				output->channels[3][i] = inputs->CHOPInputs[0].channels[3][i];
-				output->channels[4][i] = inputs->CHOPInputs[0].channels[4][i];
-				output->channels[5][i] = inputs->CHOPInputs[0].channels[5][i];
-				output->channels[6][i] = inputs->CHOPInputs[0].channels[6][i];
-				output->channels[7][i] = inputs->CHOPInputs[0].channels[7][i];
-				output->channels[8][i] = inputs->CHOPInputs[0].channels[8][i];
+		ms = getDeltaTimeMicroseconds() / 1000000.f;
 
-				output->channels[9][i] = 0;
-				//output->channels[10][i] = 0;
-				//output->channels[11][i] = 0;
+		/*float maxSubsteps = float(inputs->getParInt("Maxsubsteps"));
+		float fps = float(inputs->getParInt("Fps"));
+		dynamicsWorld->stepSimulation(ms, maxSubsteps, 1.f / fps);*/
 
-				btVector3 pos = btVector3(
-								inputs->CHOPInputs[0].channels[0][i],
-								inputs->CHOPInputs[0].channels[1][i],
-								inputs->CHOPInputs[0].channels[2][i]);
+		float substeps = float(inputs->getParInt("Substeps"));
+		float fps = float(inputs->getParInt("Fps"));
 
-				btVector3 rot = 0.017453*btVector3(
-								inputs->CHOPInputs[0].channels[3][i],
-								inputs->CHOPInputs[0].channels[4][i],
-								inputs->CHOPInputs[0].channels[5][i]);
+		btScalar elapsedTime = 1.0 / fps;
+		btScalar fixedTimestep = elapsedTime / substeps;
 
-				btVector3 scale = btVector3(
-								inputs->CHOPInputs[0].channels[6][i],
-								inputs->CHOPInputs[0].channels[7][i],
-								inputs->CHOPInputs[0].channels[8][i]);
+		dynamicsWorld->stepSimulation(elapsedTime, int(substeps + 1), fixedTimestep);
 
-				addBody(pos, rot, scale, 1);
+		int iterations = inputs->getParInt("Iterations");
+		dynamicsWorld->getSolverInfo().m_numIterations = iterations;
 
-				
-			}
-			for (int i = 0; i < inputs->CHOPInputs[1].length; i++){
-			
-				btVector3 pos = btVector3(
-								inputs->CHOPInputs[1].channels[0][i],
-								inputs->CHOPInputs[1].channels[1][i],
-								inputs->CHOPInputs[1].channels[2][i]);
+		for (int i = 0; i < rigidBoxesIds.size(); i++){
 
-				btVector3 rot = 0.017453*btVector3(
-								inputs->CHOPInputs[1].channels[3][i],
-								inputs->CHOPInputs[1].channels[4][i],
-								inputs->CHOPInputs[1].channels[5][i]);
+			int index = rigidBoxesIds[i];
 
-				btVector3 scale = btVector3(
-								inputs->CHOPInputs[1].channels[6][i],
-								inputs->CHOPInputs[1].channels[7][i],
-								inputs->CHOPInputs[1].channels[8][i]);
+			btCollisionObject* obj = dynamicsWorld->getCollisionObjectArray()[index];
+			btRigidBody* body = btRigidBody::upcast(obj);
 
-				addBody(pos, rot, scale, 0);
-
-				
-			}
-			//addPlane(btVector3(0,0,0),btVector3(0,0,0));
-		
-		} else {
-
-			//dynamicsWorld->stepSimulation(1.f/60.f,10);
-
-			ms = getDeltaTimeMicroseconds() / 1000000.f;
-			//ms = 1.4;
-			dynamicsWorld->stepSimulation(ms,inputs->floatInputs[0].values[2],1.f/inputs->floatInputs[0].values[1]);
-			//dynamicsWorld->stepSimulation(ms,10);
-			//dynamicsWorld->stepSimulation(ms,inputs->floatInputs[0].values[2]);
-
-			//dynamicsWorld->stepSimulation(1.0f/60.0f,10);
-
-			if (dynamicsWorld->getNumCollisionObjects()!=0) {
-
-			for (int i = 0; i < inputs->CHOPInputs[0].length; i++){
-
-				btCollisionObject* obj = dynamicsWorld->getCollisionObjectArray()[i];
-				btRigidBody* body = btRigidBody::upcast(obj);
-
-				btTransform trans;
-				body->getMotionState()->getWorldTransform(trans);
+			btTransform trans;
+			body->getMotionState()->getWorldTransform(trans);
 	
-				output->channels[0][i] = float(trans.getOrigin().getX());
-				output->channels[1][i] = float(trans.getOrigin().getY());
-				output->channels[2][i] = float(trans.getOrigin().getZ());
+			output->channels[TX][i] = float(trans.getOrigin().getX());
+			output->channels[TY][i] = float(trans.getOrigin().getY());
+			output->channels[TZ][i] = float(trans.getOrigin().getZ());
 
-				btScalar rotX, rotY, rotZ;
+			btScalar rotX, rotY, rotZ;
 
-				trans.getBasis().getEulerZYX(rotX,rotY,rotZ);
+			//caution about X and Z
+			trans.getBasis().getEulerZYX(rotZ,rotY,rotX);
 
-				output->channels[3][i] = float(rotX)*57.2958;
-				output->channels[4][i] = float(rotY)*57.2958;
-				output->channels[5][i] = float(rotZ)*57.2958;
+			output->channels[RX][i] = float(rotX)*57.2958;
+			output->channels[RY][i] = float(rotY)*57.2958;
+			output->channels[RZ][i] = float(rotZ)*57.2958;
 
-				output->channels[6][i] = inputs->CHOPInputs[0].channels[6][i];
-				output->channels[7][i] = inputs->CHOPInputs[0].channels[7][i];
-				output->channels[8][i] = inputs->CHOPInputs[0].channels[8][i];
+			btVector3 vel = body->getLinearVelocity();
 
-				btVector3 vel = body->getLinearVelocity();
+			output->channels[SPEED][i] = pow(vel.x(),2)+pow(vel.y(),2)+pow(vel.z(),2);
 
-				output->channels[9][i] = pow(vel.x(),2)+pow(vel.y(),2)+pow(vel.z(),2);
-				//output->channels[10][i] = 0;
-				//output->channels[11][i] = 0;
+			btQuaternion rot = trans.getRotation();
 
-			}
-
-			for (int i = 0; i < inputs->CHOPInputs[1].length; i++){
-
-				
-				btCollisionObject* obj = dynamicsWorld->getCollisionObjectArray()[i+inputs->CHOPInputs[0].length];
-				btRigidBody* body = btRigidBody::upcast(obj);
-
-				btVector3 pos = btVector3(
-								inputs->CHOPInputs[1].channels[0][i],
-								inputs->CHOPInputs[1].channels[1][i],
-								inputs->CHOPInputs[1].channels[2][i]);
-
-				btVector3 rot = 0.017453*btVector3(
-								inputs->CHOPInputs[1].channels[3][i],
-								inputs->CHOPInputs[1].channels[4][i],
-								inputs->CHOPInputs[1].channels[5][i]);
-
-				btTransform trans;
-				
-				trans.setOrigin(pos);
-
-				btMatrix3x3 rotMat;
-				rotMat.setEulerZYX(rot.x(),rot.y(),rot.z());
-	
-				trans.setBasis(rotMat);
-
-				body->getMotionState()->setWorldTransform(trans);
-
-			}
-
-			}
+			output->channels[QX][index] = float(rot.x());
+			output->channels[QY][index] = float(rot.y());
+			output->channels[QZ][index] = float(rot.z());
+			output->channels[QW][index] = float(rot.w());
 
 		}
-		
-
 
 	}
-	else // If not input is connected, lets output a sine wave instead
-	{
-		
-	}
+	
 }
 
 int
@@ -397,8 +614,7 @@ BulletCHOP::getNumInfoCHOPChans()
 }
 
 void
-BulletCHOP::getInfoCHOPChan(int index,
-										CHOP_InfoCHOPChan *chan)
+BulletCHOP::getInfoCHOPChan(int index, OP_InfoCHOPChan* chan)
 {
 	// This function will be called once for each channel we said we'd want to return
 	// In this example it'll only be called once.
@@ -417,7 +633,7 @@ BulletCHOP::getInfoCHOPChan(int index,
 }
 
 bool		
-BulletCHOP::getInfoDATSize(CHOP_InfoDATSize *infoSize)
+BulletCHOP::getInfoDATSize(OP_InfoDATSize *infoSize)
 {
 	infoSize->rows = 2;
 	infoSize->cols = 2;
@@ -430,7 +646,7 @@ BulletCHOP::getInfoDATSize(CHOP_InfoDATSize *infoSize)
 void
 BulletCHOP::getInfoDATEntries(int index,
 										int nEntries,
-										CHOP_InfoDATEntries *entries)
+										OP_InfoDATEntries *entries)
 {
 	if (index == 0)
 	{
@@ -467,4 +683,148 @@ BulletCHOP::getInfoDATEntries(int index,
 
 
 	}
+}
+
+void BulletCHOP::setupParameters(OP_ParameterManager* manager)
+{
+	
+	// Reset
+	{
+		OP_NumericParameter	np;
+
+		np.name = "Reset";
+		np.label = "Reset";
+		np.defaultValues[0] = 0.0;
+
+		OP_ParAppendResult res = manager->appendInt(np);
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+
+	// Maxsubsteps
+	/*{
+		OP_NumericParameter	np;
+
+		np.name = "Maxsubsteps";
+		np.label = "Max Substeps";
+		//np.page = "Solver";
+		np.defaultValues[0] = 10;
+
+		OP_ParAppendResult res = manager->appendInt(np);
+		assert(res == OP_ParAppendResult::Success);
+	}*/
+
+	// Fps
+	{
+		OP_NumericParameter	np;
+
+		np.name = "Fps";
+		np.label = "FPS";
+		//np.page = "Solver";
+		np.defaultValues[0] = 60;
+
+		OP_ParAppendResult res = manager->appendFloat(np);
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	// Substeps
+	{
+		OP_NumericParameter	np;
+
+		np.name = "Substeps";
+		np.label = "Substeps";
+		//np.page = "Solver";
+		np.defaultValues[0] = 1;
+
+
+		OP_ParAppendResult res = manager->appendInt(np);
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	// Iterations
+	{
+		OP_NumericParameter	np;
+
+		np.name = "Iterations";
+		np.label = "Iterations";
+		//np.page = "Solver";
+		np.defaultValues[0] = 10;
+
+		OP_ParAppendResult res = manager->appendInt(np);
+		assert(res == OP_ParAppendResult::Success);
+	}
+	
+	//Gravity
+	{
+		OP_NumericParameter	np;
+
+		np.name = "Gravity";
+		np.label = "Gravity";
+
+		np.defaultValues[0] = 0.0;
+		np.defaultValues[1] = -9.8;
+		np.defaultValues[2] = 0.0;
+
+
+		OP_ParAppendResult res = manager->appendXYZ(np);
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+
+	//Spheresrigidbodieschop
+	/*{
+		OP_StringParameter sp;
+
+		sp.name = "Spheresrigidchop";
+		sp.label = "Spheres Rigid Bodies CHOP";
+		//sp.page = "Collisions";
+
+		OP_ParAppendResult res = manager->appendCHOP(sp);
+		assert(res == OP_ParAppendResult::Success);
+	}*/
+
+	//Boxesrigidchop
+	{
+	OP_StringParameter sp;
+
+	sp.name = "Boxesrigidchop";
+	sp.label = "Boxes Rigid Bodies CHOP";
+	//sp.page = "Collisions";
+
+	OP_ParAppendResult res = manager->appendCHOP(sp);
+	assert(res == OP_ParAppendResult::Success);
+	}
+
+	//Boxeskinebodieschop
+	{
+		OP_StringParameter sp;
+
+		sp.name = "Boxeskinechop";
+		sp.label = "Boxes Kinematic Bodies CHOP";
+		//sp.page = "Collisions";
+
+		OP_ParAppendResult res = manager->appendCHOP(sp);
+		assert(res == OP_ParAppendResult::Success);
+	}
+
+	//Colplaneschop
+	/*{
+	OP_StringParameter sp;
+
+	sp.name = "Colplaneschop";
+	sp.label = "Collision Planes CHOP";
+	sp.page = "Collisions";
+
+	OP_ParAppendResult res = manager->appendCHOP(sp);
+	assert(res == OP_ParAppendResult::Success);
+	}*/
+
+}
+
+void BulletCHOP::pulsePressed(const char* name)
+{
+	/*if (!strcmp(name, "Reset"))
+	{
+		myOffset = 0.0;
+	}*/
 }
